@@ -2,7 +2,7 @@
 """
 Bot Telegram Auto Posting Cosplay
 - Jalan terus di Railway (loop harian)
-- Posting 5 album setiap hari jam 09:00 WIB
+- Posting 5x sehari: 16:00, 19:30, 21:23, 00:02, 02:05 WIB
 - 3 foto sekaligus (media group) + caption terpisah
 - Tanpa hashtag
 """
@@ -21,10 +21,18 @@ from datetime import datetime, timezone, timedelta
 BOT_TOKEN        = os.environ.get('BOT_TOKEN', 'GANTI_TOKEN')
 CHAT_ID          = os.environ.get('CHAT_ID', '@cosplayscann')
 WEB_URL          = 'https://cosplayscan.netlify.app'
-ALBUM_PER_HARI   = 5
+ALBUM_PER_SESI   = 1          # 1 album per sesi (5 sesi = 5 album/hari)
 DELAY_ANTAR_POST = 60
 MAX_FOTO         = 3
-JAM_POSTING      = 9   # jam 09:00 WIB
+
+# Jadwal posting harian (jam, menit) — WIB
+JADWAL_POSTING = [
+    (16,  0),   # 16:00
+    (19, 30),   # 19:30
+    (21, 23),   # 21:23
+    ( 0,  2),   # 00:02
+    ( 2,  5),   # 02:05
+]
 
 # Timezone WIB = UTC+7
 WIB = timezone(timedelta(hours=7))
@@ -226,11 +234,11 @@ def kirim_album(album: dict) -> bool:
 
 
 # ─────────────────────────────────────────────
-# SESI POSTING HARIAN
+# SESI POSTING
 # ─────────────────────────────────────────────
-def jalankan_sesi():
+def jalankan_sesi(label: str):
     print("=" * 55)
-    print(f"  📅 {datetime.now(WIB).strftime('%Y-%m-%d %H:%M:%S')} WIB")
+    print(f"  📅 {datetime.now(WIB).strftime('%Y-%m-%d %H:%M:%S')} WIB  [{label}]")
     print("=" * 55)
 
     print("\n📂 Membaca database...")
@@ -251,7 +259,7 @@ def jalankan_sesi():
         return
 
     random.shuffle(belum)
-    sesi     = belum[:ALBUM_PER_HARI]
+    sesi     = belum[:ALBUM_PER_SESI]
     berhasil = 0
     gagal    = 0
 
@@ -283,39 +291,68 @@ def jalankan_sesi():
 
 
 # ─────────────────────────────────────────────
-# LOOP UTAMA — jalan terus, posting setiap hari jam 09:00 WIB
+# CEK APAKAH WAKTU SEKARANG COCOK DENGAN JADWAL
 # ─────────────────────────────────────────────
-def hitung_detik_ke_jam(jam_target: int) -> int:
-    """Hitung berapa detik lagi sampai jam target (WIB)."""
-    sekarang  = datetime.now(WIB)
-    target    = sekarang.replace(hour=jam_target, minute=0, second=0, microsecond=0)
-    if sekarang >= target:
-        # Sudah lewat jam target hari ini, tunggu besok
-        target += timedelta(days=1)
-    selisih = (target - sekarang).total_seconds()
-    return int(selisih)
+def cek_jadwal(sekarang: datetime) -> tuple:
+    """
+    Kembalikan (True, label) jika waktu sekarang cocok dengan salah satu jadwal.
+    Toleransi ±0 detik — hanya cocok saat menit tepat.
+    """
+    for jam, menit in JADWAL_POSTING:
+        if sekarang.hour == jam and sekarang.minute == menit:
+            return True, f"{jam:02d}:{menit:02d}"
+    return False, ''
 
 
+def hitung_detik_ke_jadwal_berikutnya(sekarang: datetime) -> tuple:
+    """Hitung detik menuju jadwal posting terdekat berikutnya."""
+    kandidat = []
+    for jam, menit in JADWAL_POSTING:
+        target = sekarang.replace(hour=jam, minute=menit, second=0, microsecond=0)
+        if sekarang >= target:
+            target += timedelta(days=1)
+        selisih = (target - sekarang).total_seconds()
+        kandidat.append((selisih, f"{jam:02d}:{menit:02d}"))
+
+    kandidat.sort()
+    return int(kandidat[0][0]), kandidat[0][1]
+
+
+# ─────────────────────────────────────────────
+# LOOP UTAMA
+# ─────────────────────────────────────────────
 def main():
     print("🤖 Bot Cosplay Railway — aktif!")
-    print(f"   Akan posting setiap hari jam {JAM_POSTING:02d}:00 WIB")
+    print("   Jadwal posting (WIB):")
+    for jam, menit in JADWAL_POSTING:
+        print(f"     • {jam:02d}:{menit:02d}")
+
+    sesi_berjalan = False   # flag agar tidak double-trigger dalam 1 menit
 
     while True:
         sekarang = datetime.now(WIB)
+        cocok, label = cek_jadwal(sekarang)
 
-        # Kalau sudah jam posting, langsung jalankan
-        if sekarang.hour == JAM_POSTING and sekarang.minute == 0:
-            jalankan_sesi()
-            # Tunggu 61 detik supaya tidak jalan 2x dalam menit yang sama
+        if cocok and not sesi_berjalan:
+            sesi_berjalan = True
+            jalankan_sesi(label)
+            # Tunggu hingga menit berganti agar tidak trigger ulang
             time.sleep(61)
+            sesi_berjalan = False
         else:
-            detik = hitung_detik_ke_jam(JAM_POSTING)
-            jam   = detik // 3600
-            menit = (detik % 3600) // 60
-            print(f"⏰ Sekarang {sekarang.strftime('%H:%M')} WIB — posting dalam {jam}j {menit}m")
-            # Cek setiap 30 detik
+            if not cocok:
+                sesi_berjalan = False   # reset flag di luar jadwal
+            detik, jadwal_berikutnya = hitung_detik_ke_jadwal_berikutnya(sekarang)
+            jam_hitung   = detik // 3600
+            menit_hitung = (detik % 3600) // 60
+            print(
+                f"⏰ {sekarang.strftime('%H:%M')} WIB — "
+                f"jadwal berikutnya {jadwal_berikutnya} "
+                f"(dalam {jam_hitung}j {menit_hitung}m)"
+            )
             time.sleep(30)
 
 
 if __name__ == '__main__':
     main()
+            
