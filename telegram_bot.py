@@ -20,21 +20,19 @@ from datetime import datetime, timezone, timedelta
 # ─────────────────────────────────────────────
 BOT_TOKEN        = os.environ.get('BOT_TOKEN', 'GANTI_TOKEN')
 CHAT_ID          = os.environ.get('CHAT_ID', '@cosplayscann')
-WEB_URL          = 'https://cosplayscan.netlify.app'
-ALBUM_PER_SESI   = 1          # 1 album per sesi (5 sesi = 5 album/hari)
+WEB_URL          = 'https://cosplayscan.vercel.app'
+ALBUM_PER_SESI   = 1
 DELAY_ANTAR_POST = 60
 MAX_FOTO         = 3
 
-# Jadwal posting harian (jam, menit) — WIB
 JADWAL_POSTING = [
-    (16,  0),   # 16:00
-    (19, 30),   # 19:30
-    (21, 23),   # 21:23
-    ( 0,  2),   # 00:02
-    ( 2,  5),   # 02:05
+    (16,  0),
+    (19, 30),
+    (21, 23),
+    ( 0,  2),
+    ( 2,  5),
 ]
 
-# Timezone WIB = UTC+7
 WIB = timezone(timedelta(hours=7))
 
 JSON_FILES = [
@@ -72,10 +70,9 @@ API_BASE      = f'https://api.telegram.org/bot{BOT_TOKEN}'
 
 
 # ─────────────────────────────────────────────
-# SLUG & CAPTION
+# SLUG & URL GENERATOR (Sesuai Web)
 # ─────────────────────────────────────────────
 def slugify(teks: str) -> str:
-    teks = re.sub(r'[^\x00-\x7F]', '', teks)
     teks = teks.lower().strip()
     teks = re.sub(r'[^a-z0-9\s-]', '', teks)
     teks = re.sub(r'\s+', '-', teks)
@@ -83,11 +80,20 @@ def slugify(teks: str) -> str:
     return teks
 
 
-def generate_slug(album: dict) -> str:
+def generate_slug(album: dict) -> tuple:
+    """
+    Return (album_slug, cosplayer_slug) sesuai format web
+    album.html?id=ALBUM_SLUG&c=COSPLAYER_SLUG
+    """
     source_file   = album.get('_source_file', '')
     nama_aktor    = NAMA_AKTOR.get(source_file, source_file.replace('_database.json', ''))
     nama_karakter = album.get('karakter', '')
-    return slugify(nama_aktor) + '-' + slugify(nama_karakter)
+    
+    cos_slug = slugify(nama_aktor)
+    char_slug = slugify(nama_karakter)
+    album_slug = f"{cos_slug}-{char_slug}"
+    
+    return album_slug, cos_slug
 
 
 def ambil_game(judul: str) -> str:
@@ -95,7 +101,7 @@ def ambil_game(judul: str) -> str:
     return pisah[-1].strip() if len(pisah) >= 2 else ''
 
 
-def buat_caption(album: dict, slug: str) -> str:
+def buat_caption(album: dict) -> str:
     source_file   = album.get('_source_file', '')
     nama_aktor    = NAMA_AKTOR.get(source_file, source_file.replace('_database.json', ''))
     nama_karakter = album.get('karakter', '')
@@ -103,7 +109,10 @@ def buat_caption(album: dict, slug: str) -> str:
     gambar        = album.get('gambar_cloudinary', [])
     jumlah        = len(gambar)
     game          = ambil_game(judul)
-    url           = f"{WEB_URL}/#{slug}"
+    
+    # Generate slug & URL langsung ke album spesifik
+    album_slug, cos_slug = generate_slug(album)
+    url = f"{WEB_URL}/album.html?id={album_slug}&c={cos_slug}"
 
     caption  = f"👤 {nama_aktor}\n"
     caption += f"🎭 {nama_karakter}\n"
@@ -212,8 +221,8 @@ def kirim_album(album: dict) -> bool:
         print("    ⚠️  Tidak ada gambar")
         return False
 
-    slug    = generate_slug(album)
-    caption = buat_caption(album, slug)
+    album_slug, cos_slug = generate_slug(album)
+    caption = buat_caption(album)
 
     foto_list = [cover]
     for url in gambar_list:
@@ -230,6 +239,7 @@ def kirim_album(album: dict) -> bool:
     time.sleep(2)
 
     print(f"    💬 Kirim caption...")
+    print(f"    🔗 URL: {WEB_URL}/album.html?id={album_slug}&c={cos_slug}")
     return kirim_pesan(caption)
 
 
@@ -250,7 +260,14 @@ def jalankan_sesi(label: str):
         return
 
     terkirim = load_terkirim()
-    belum    = [a for a in semua_album if a.get('url_album') not in terkirim]
+    
+    # Tracking pakai album_slug (bukan url_album)
+    belum = []
+    for a in semua_album:
+        slug, _ = generate_slug(a)
+        if slug not in terkirim:
+            belum.append(a)
+    
     print(f"   Terkirim    : {len(terkirim)}")
     print(f"   Belum       : {len(belum)}")
 
@@ -266,12 +283,13 @@ def jalankan_sesi(label: str):
     print(f"\n🚀 Posting {len(sesi)} album...\n")
 
     for i, album in enumerate(sesi, 1):
-        print(f"[{i}/{len(sesi)}] {album.get('judul', '')}")
+        slug, _ = generate_slug(album)
+        print(f"[{i}/{len(sesi)}] {album.get('judul', '')} | slug: {slug}")
         ok = kirim_album(album)
 
         if ok:
             berhasil += 1
-            terkirim.add(album.get('url_album'))
+            terkirim.add(slug)
             simpan_terkirim(terkirim)
             print(f"    ✅ Berhasil!\n")
         else:
@@ -291,13 +309,9 @@ def jalankan_sesi(label: str):
 
 
 # ─────────────────────────────────────────────
-# CEK APAKAH WAKTU SEKARANG COCOK DENGAN JADWAL
+# CEK JADWAL
 # ─────────────────────────────────────────────
 def cek_jadwal(sekarang: datetime) -> tuple:
-    """
-    Kembalikan (True, label) jika waktu sekarang cocok dengan salah satu jadwal.
-    Toleransi ±0 detik — hanya cocok saat menit tepat.
-    """
     for jam, menit in JADWAL_POSTING:
         if sekarang.hour == jam and sekarang.minute == menit:
             return True, f"{jam:02d}:{menit:02d}"
@@ -305,7 +319,6 @@ def cek_jadwal(sekarang: datetime) -> tuple:
 
 
 def hitung_detik_ke_jadwal_berikutnya(sekarang: datetime) -> tuple:
-    """Hitung detik menuju jadwal posting terdekat berikutnya."""
     kandidat = []
     for jam, menit in JADWAL_POSTING:
         target = sekarang.replace(hour=jam, minute=menit, second=0, microsecond=0)
@@ -327,7 +340,7 @@ def main():
     for jam, menit in JADWAL_POSTING:
         print(f"     • {jam:02d}:{menit:02d}")
 
-    sesi_berjalan = False   # flag agar tidak double-trigger dalam 1 menit
+    sesi_berjalan = False
 
     while True:
         sekarang = datetime.now(WIB)
@@ -336,12 +349,11 @@ def main():
         if cocok and not sesi_berjalan:
             sesi_berjalan = True
             jalankan_sesi(label)
-            # Tunggu hingga menit berganti agar tidak trigger ulang
             time.sleep(61)
             sesi_berjalan = False
         else:
             if not cocok:
-                sesi_berjalan = False   # reset flag di luar jadwal
+                sesi_berjalan = False
             detik, jadwal_berikutnya = hitung_detik_ke_jadwal_berikutnya(sekarang)
             jam_hitung   = detik // 3600
             menit_hitung = (detik % 3600) // 60
@@ -355,4 +367,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-            
